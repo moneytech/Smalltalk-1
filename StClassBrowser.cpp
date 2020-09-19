@@ -110,7 +110,7 @@ public:
                     if( id->d_keyword )
                         break;
                     if( click )
-                        d_that->fillUse(id->d_resolved);
+                        d_that->fillNamedUse(id->d_resolved);
                     cur.setPosition( offCorr( e->d_pos - d_that->d_curMethod->d_pos ) );
                     cur.setPosition( cur.position() + e->getLen(), QTextCursor::KeepAnchor );
                     sel.cursor = cur;
@@ -202,6 +202,13 @@ public:
                             break;
                         case Ast::Thing::T_Class:
                             text = QString("Class <i>%1</i>").arg(id->d_resolved->d_name.constData());
+                            if( click && QApplication::keyboardModifiers() == Qt::ControlModifier )
+                            {
+                                d_that->setCurClass( d_that->d_mdl->getClasses().value(id->d_resolved->d_name).data() );
+                                d_that->pushLocation();
+                                d_that->syncLists();
+                                d_that->fillNamedUse(d_that->d_curClass.data());
+                            }
                             break;
                         }
                     }
@@ -209,11 +216,25 @@ public:
                         QToolTip::showText(pos,
                                        tr("<html><b>%1:</b><p>%2</p></html>").arg(title)
                                        .arg(text),this);
+                    QList<QTreeWidgetItem*> items = d_that->d_vars->findItems(
+                                id->d_ident, Qt::MatchExactly );
+                    if( items.size() == 1 )
+                    {
+                        d_that->d_vars->setCurrentItem(items.first());
+                        d_that->d_vars->scrollToItem(items.first(),QAbstractItemView::PositionAtCenter );
+                        d_that->d_vars->expandItem(items.first());
+                    }else
+                        d_that->d_vars->setCurrentItem(0);
                 }
                 break;
             case Ast::Thing::T_MsgSend:
                 {
                     Ast::MsgSend* s = static_cast<Ast::MsgSend*>(e);
+                    if( click )
+                    {
+                        QByteArray name = Lexer::getSymbol(s->prettyName(false));
+                        d_that->fillPatternUse(name);
+                    }
                     for( int i = 0; i < s->d_pattern.size(); i++ )
                     {
                         cur.setPosition( offCorr( s->d_pattern[i].second - d_that->d_curMethod->d_pos ) );
@@ -222,15 +243,38 @@ public:
                         esl.append(sel);
                     }
                     if( click )
+                    {
+                        if( QApplication::keyboardModifiers() == Qt::ControlModifier )
+                        {
+                            if( s->d_receiver->getTag() == Ast::Thing::T_Ident )
+                            {
+                                Ast::Ident* id = static_cast<Ast::Ident*>( s->d_receiver.data() );
+                                if( id->d_resolved && id->d_resolved->getTag() == Ast::Thing::T_Class )
+                                {
+                                    Ast::Class* cls = static_cast<Ast::Class*>( id->d_resolved );
+                                    Ast::Method* m = cls->findMethod( Lexer::getSymbol(s->prettyName(false)) );
+                                    if( m )
+                                    {
+                                        d_that->setCurMethod(m);
+                                        d_that->setCurClass( m->getClass() );
+                                        d_that->pushLocation();
+                                        d_that->syncLists();
+                                        d_that->fillPatternUse(m->d_name);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         QToolTip::showText(pos,
                                        tr("<html><b>Message:</b><p>%1</p></html>")
                                        .arg(s->prettyName().constData()),this);
+                    }
                     QList<QTreeWidgetItem*> items = d_that->d_messages->findItems(
                                 s->prettyName(false), Qt::MatchExactly );
                     if( items.size() == 1 )
                     {
                         d_that->d_messages->setCurrentItem(items.first());
-                        d_that->d_messages->scrollToItem(items.first(),QAbstractItemView::PositionAtTop );
+                        d_that->d_messages->scrollToItem(items.first(),QAbstractItemView::PositionAtCenter );
                         d_that->d_messages->expandItem(items.first());
                     }else
                         d_that->d_messages->setCurrentItem(0);
@@ -274,6 +318,7 @@ ClassBrowser::ClassBrowser(QWidget *parent)
     createMessages();
     createPrimitives();
     createUse();
+    createVars();
 
     QSettings s;
 
@@ -325,6 +370,7 @@ bool ClassBrowser::parse(const QString& path)
     fillHierarchy();
     fillMessages();
     fillPrimitives();
+    fillVars();
     return true;
 }
 
@@ -438,14 +484,39 @@ void ClassBrowser::createMembers()
     dock->setWidget(pane);
     addDockWidget( Qt::RightDockWidgetArea, dock );
     connect( d_members, SIGNAL(itemClicked(QTreeWidgetItem*,int)), this, SLOT(onMembersClicked()) );
+    connect( d_class, SIGNAL(linkActivated(QString)), this, SLOT(onLink(QString)) );
 }
 
 static QByteArray superClasses( Ast::Class* c )
 {
     if( c && c->getSuper() )
-        return c->getSuper()->d_name + " " + superClasses( c->getSuper() );
+        return "<a href=\"class:" + c->getSuper()->d_name + "\">" +
+                c->getSuper()->d_name + "</a> " + superClasses( c->getSuper() );
     else
         return QByteArray();
+}
+
+static QString fieldList( Ast::Class* c, int& nr, bool instance )
+{
+    QString res;
+    Ast::Class* super = c->getSuper();
+    if( super )
+        res = fieldList(super, nr,instance);
+    QString vars;
+    for( int i = 0; i < c->d_vars.size(); i++ )
+    {
+        if( ( instance && c->d_vars[i]->d_kind == Ast::Variable::InstanceLevel )
+                || ( !instance && c->d_vars[i]->d_kind == Ast::Variable::ClassLevel ) )
+            vars += QString("<br>%1 %2").arg(nr++).arg(c->d_vars[i]->d_name.constData());
+    }
+    if( !vars.isEmpty() )
+    {
+        if( !res.isEmpty() )
+            res += "<br>\n";
+        res += QString("<u>%1</u>").arg(c->d_name.constData()) + vars;
+    }
+
+    return res;
 }
 
 void ClassBrowser::fillMembers()
@@ -471,6 +542,11 @@ void ClassBrowser::fillMembers()
         QTreeWidgetItem* fields = new QTreeWidgetItem(d_members);
         fields->setFont(0,bold);
         fields->setText(0,tr("fields:"));
+        int nr = 1;
+        QString varlist = "<h3>Instance:</h3>\n" + fieldList( d_curClass.data(), nr, true );
+        nr = 1;
+        varlist += "<h3>Class:</h3>\n" + fieldList( d_curClass.data(), nr, false );
+        fields->setToolTip(0, varlist );
         for( int i = 0; i < d_curClass->d_vars.size(); i++ )
         {
             QTreeWidgetItem* sub1 = new QTreeWidgetItem(fields);
@@ -504,6 +580,7 @@ void ClassBrowser::fillMembers()
                 mem->setText(0,QString("[c] %1").arg(k.key().constData()));
             else
                 mem->setText(0, k.key());
+            mem->setToolTip(0,mem->text(0));
             mem->setData(0,Qt::UserRole,QVariant::fromValue(Ast::MethodRef(k.value())));
         }
     }
@@ -522,6 +599,20 @@ void ClassBrowser::setCurMethod(Ast::Method* m)
         d_curClass = m->getClass();
     d_curMethod = m;
     fillMethod();
+}
+
+void ClassBrowser::setCurVar(Ast::Variable* v)
+{
+    if( v != 0 )
+    {
+        Ast::Class* c = v->d_owner->getClass();
+        if( d_curClass != c )
+        {
+            d_curClass = v->d_owner->getClass();
+            fillMembers();
+        }
+    }
+    d_curVar = v;
 }
 
 QString ClassBrowser::getClassSummary(Ast::Class* c, bool elided)
@@ -720,7 +811,7 @@ void ClassBrowser::createUse()
     connect( d_use, SIGNAL(itemClicked(QTreeWidgetItem*,int)), this, SLOT(onUseClicked()) );
 }
 
-void ClassBrowser::fillUse(Ast::Named* n)
+void ClassBrowser::fillNamedUse(Ast::Named* n)
 {
     d_use->clear();
     d_useTitle->clear();
@@ -791,6 +882,47 @@ void ClassBrowser::fillUse(Ast::Named* n)
             item->setText(1, QString("%1 %2").arg(id->d_inMethod->getClass()->d_name.constData() ).
                           arg(id->d_inMethod->d_name.constData() ) );
             item->setData(1,Qt::UserRole, QVariant::fromValue( Ast::MethodRef(id->d_inMethod) ) );
+            item->setToolTip(1,item->text(1));
+        }else
+            i++;
+    }
+    d_use->sortByColumn(1,Qt::AscendingOrder);
+    d_use->resizeColumnToContents(0);
+}
+
+void ClassBrowser::fillPatternUse(const QByteArray& pat)
+{
+    d_use->clear();
+    d_useTitle->clear();
+
+    if( pat.isEmpty() )
+        return;
+
+    d_useTitle->setText(QString("Pattern <b><i>%1</i></b>").arg( pat.constData() ) );
+
+    const QList<Ast::MsgSend*>& sends = d_mdl->getTxref().value(pat.constData());
+    Ast::Method* m = 0;
+    int i = 0;
+    while( i < sends.size() )
+    {
+        if( sends[i]->d_inMethod != m )
+        {
+            int count = 0;
+            Ast::MsgSend* send = sends[i];
+            m = send->d_inMethod;
+            while( i < sends.size() && sends[i]->d_inMethod == m )
+            {
+                count++;
+                i++;
+            }
+            QTreeWidgetItem* item = new QTreeWidgetItem( d_use );
+            item->setText(0, QString::number(count) );
+            item->setToolTip(0, QString("%1 uses").arg(count));
+            Q_ASSERT( !send->d_pattern.isEmpty() );
+            item->setData(0,Qt::UserRole,send->d_pattern.first().second );
+            item->setText(1, QString("%1 %2").arg(send->d_inMethod->getClass()->d_name.constData() ).
+                          arg(send->d_inMethod->d_name.constData() ) );
+            item->setData(1,Qt::UserRole, QVariant::fromValue( Ast::MethodRef(send->d_inMethod) ) );
             item->setToolTip(1,item->text(1));
         }else
             i++;
@@ -895,11 +1027,16 @@ void ClassBrowser::syncLists(QWidget* besides)
     }
     if( d_members != besides )
     {
-        if( d_curMethod.isNull() )
+        if( d_curMethod.isNull() && d_curVar.isNull() )
             d_members->setCurrentItem(0);
-        else
+        else if( !d_curMethod.isNull() )
         {
             QTreeWidgetItem* res = _find(d_members, QVariant::fromValue(d_curMethod) );
+            d_members->setCurrentItem(res);
+            d_members->scrollToItem(res);
+        }else
+        {
+            QTreeWidgetItem* res = _find(d_members, QVariant::fromValue(d_curVar) );
             d_members->setCurrentItem(res);
             d_members->scrollToItem(res);
         }
@@ -917,6 +1054,48 @@ void ClassBrowser::syncLists(QWidget* besides)
     }
 }
 
+void ClassBrowser::createVars()
+{
+    QDockWidget* dock = new QDockWidget( tr("Globals && Fields"), this );
+    dock->setObjectName("Vars");
+    dock->setAllowedAreas( Qt::AllDockWidgetAreas );
+    dock->setFeatures( QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable );
+    d_vars = new QTreeWidget(dock);
+    d_vars->setHeaderHidden(true);
+    d_vars->setAlternatingRowColors(true);
+    dock->setWidget(d_vars);
+    addDockWidget( Qt::LeftDockWidgetArea, dock );
+    connect( d_vars, SIGNAL(itemClicked(QTreeWidgetItem*,int)), this, SLOT(onVarsClicked()) );
+}
+
+void ClassBrowser::fillVars()
+{
+    d_vars->clear();
+    const Model::VariableXref& vx = d_mdl->getVxref();
+    QFont bold = d_vars->font();
+    bold.setBold(true);
+    Model::VariableXref::const_iterator i;
+    for( i = vx.begin(); i != vx.end(); ++i )
+    {
+        QTreeWidgetItem* item = new QTreeWidgetItem( d_vars );
+        item->setText(0, i.key() );
+        item->setToolTip(0,item->text(0));
+        foreach( Ast::Variable* v, i.value() )
+        {
+            QTreeWidgetItem* sub = new QTreeWidgetItem( item );
+            if( v->d_owner && v->d_owner->getTag() == Ast::Thing::T_Class )
+                sub->setText(0, v->d_owner->d_name );
+            else
+            {
+                sub->setText(0, "<global>" );
+                item->setFont(0,bold );
+            }
+            sub->setData(0,Qt::UserRole, QVariant::fromValue( Ast::VarRef(v) ) );
+        }
+    }
+    d_vars->sortByColumn(0,Qt::AscendingOrder);
+}
+
 void ClassBrowser::onClassesClicked()
 {
     QTreeWidgetItem* item = d_classes->currentItem();
@@ -925,6 +1104,7 @@ void ClassBrowser::onClassesClicked()
     setCurClass( item->data(0,Qt::UserRole).value<Ast::ClassRef>().data() );
     pushLocation();
     syncLists(d_classes);
+    fillNamedUse(d_curClass.data());
 }
 
 void ClassBrowser::onCatsClicked()
@@ -935,16 +1115,27 @@ void ClassBrowser::onCatsClicked()
     setCurClass( item->data(0,Qt::UserRole).value<Ast::ClassRef>().data() );
     pushLocation();
     syncLists(d_cats);
+    fillNamedUse(d_curClass.data());
 }
 
 void ClassBrowser::onMembersClicked()
 {
     QTreeWidgetItem* item = d_members->currentItem();
-    if( item == 0 || !item->data(0,Qt::UserRole).canConvert<Ast::MethodRef>() )
+    if( item == 0 )
         return;
-    setCurMethod( item->data(0,Qt::UserRole).value<Ast::MethodRef>().data() );
-    pushLocation();
-    syncLists(d_members);
+    if( item->data(0,Qt::UserRole).canConvert<Ast::MethodRef>() )
+    {
+        setCurMethod( item->data(0,Qt::UserRole).value<Ast::MethodRef>().data() );
+        pushLocation();
+        syncLists(d_members);
+        fillPatternUse(d_curMethod->d_name);
+    }else if( item->data(0,Qt::UserRole).canConvert<Ast::VarRef>() )
+    {
+        setCurVar( item->data(0,Qt::UserRole).value<Ast::VarRef>().data() );
+        pushLocation();
+        syncLists(d_members);
+        fillNamedUse(d_curVar.data());
+    }
 }
 
 void ClassBrowser::onHierarchyClicked()
@@ -955,6 +1146,7 @@ void ClassBrowser::onHierarchyClicked()
     setCurClass( item->data(0,Qt::UserRole).value<Ast::ClassRef>().data() );
     pushLocation();
     syncLists(d_hierarchy);
+    fillNamedUse(d_curClass.data());
 }
 
 void ClassBrowser::onMessagesClicked()
@@ -967,6 +1159,7 @@ void ClassBrowser::onMessagesClicked()
         setCurClass( d_curMethod->getClass() );
     pushLocation();
     syncLists(d_messages);
+    fillPatternUse(d_curMethod->d_name);
 }
 
 void ClassBrowser::onPrimitiveClicked()
@@ -979,6 +1172,19 @@ void ClassBrowser::onPrimitiveClicked()
         setCurClass( d_curMethod->getClass() );
     pushLocation();
     syncLists(d_primitives);
+    fillPatternUse(d_curMethod->d_name);
+}
+
+void ClassBrowser::onVarsClicked()
+{
+    QTreeWidgetItem* item = d_vars->currentItem();
+    if( item == 0 || !item->data(0,Qt::UserRole).canConvert<Ast::VarRef>() )
+        return;
+    d_curMethod = 0;
+    setCurVar( item->data(0,Qt::UserRole).value<Ast::VarRef>().data() );
+    pushLocation();
+    syncLists(d_vars);
+    fillNamedUse(d_curVar.data());
 }
 
 void ClassBrowser::onUseClicked()
@@ -991,8 +1197,12 @@ void ClassBrowser::onUseClicked()
     {
         setCurClass( d_curMethod->getClass() );
         QTextCursor cur = d_code->textCursor();
-        cur.setPosition( item->data(0,Qt::UserRole).toUInt() - d_curMethod->d_pos );
-        d_code->markCode( cur, QPoint(), false );
+        const quint32 pos = item->data(0,Qt::UserRole).toUInt();
+        if( pos > d_curMethod->d_pos )
+        {
+            cur.setPosition( pos - d_curMethod->d_pos );
+            d_code->markCode( cur, QPoint(), false );
+        }
     }
     pushLocation();
     syncLists(d_use);
@@ -1025,13 +1235,24 @@ void ClassBrowser::onGoForward()
     pushLocation();
 }
 
+void ClassBrowser::onLink(const QString& link)
+{
+    if( link.startsWith("class:") )
+    {
+        setCurClass( d_mdl->getClasses().value(link.mid(6).toUtf8()).data() );
+        pushLocation();
+        syncLists();
+        fillNamedUse(d_curClass.data());
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
     a.setOrganizationName("me@rochus-keller.ch");
     a.setOrganizationDomain("github.com/rochus-keller/Smalltalk");
     a.setApplicationName("Smalltalk 80 Class Browser");
-    a.setApplicationVersion("0.5");
+    a.setApplicationVersion("0.7.2");
     a.setStyle("Fusion");
 
     ClassBrowser w;

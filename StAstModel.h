@@ -166,7 +166,8 @@ namespace Ast
         QList< QPair<QByteArray,quint32> > d_pattern; // name, pos
         ExpList d_args;
         Ref<Expression> d_receiver;
-        MsgSend():d_patternType(NoPattern){}
+        Method* d_inMethod;
+        MsgSend():d_patternType(NoPattern),d_inMethod(0){}
         int getTag() const { return T_MsgSend; }
         void accept(AstVisitor* v) { v->visit(this); }
         QByteArray prettyName(bool withSpace = true) const;
@@ -232,7 +233,7 @@ namespace Ast
         quint8 d_patternType;
         bool d_classLevel;
         quint8 d_primitive; // specified primitive id or zero
-        QByteArrayList d_pattern;
+        QByteArrayList d_pattern; // compact form in d_name
         quint32 d_endPos;
         QByteArray d_category;
         ExpList d_helper;
@@ -289,8 +290,10 @@ public:
     typedef QHash< const char*, Ast::Ref<Ast::Class> > Classes2;
     typedef QMap<QByteArray, QList<Ast::Class*> > ClassCats;
     typedef QHash<const char*, QList<Ast::Method*> > MethodXref;
+    typedef QHash<const char*, QList<Ast::Variable*> > VariableXref;
     typedef QHash<quint16, QList<Ast::Method*> > PrimitiveXref;
     typedef QHash<Ast::Named*, QList<Ast::Ident*> > IdentXref;
+    typedef QHash<const char*, QList<Ast::MsgSend*> > PatternXref;
 
     struct Error
     {
@@ -309,6 +312,8 @@ public:
     const MethodXref& getMxref() const { return d_mx; }
     const PrimitiveXref& getPxref() const { return d_px; }
     const IdentXref& getIxref() const { return d_ix; }
+    const VariableXref& getVxref() const { return d_vx; }
+    const PatternXref& getTxref() const { return d_tx; }
     const QList<Error>& getErrs() const { return d_errs; }
 protected:
     void fillGlobals();
@@ -319,8 +324,10 @@ private:
     Classes2 d_classes2;
     ClassCats d_cats;
     MethodXref d_mx;
+    VariableXref d_vx; // only global, instance and class vars
     PrimitiveXref d_px;
     IdentXref d_ix;
+    PatternXref d_tx;
     QByteArray nil;
     Ast::GlobalScope d_globals;
     QSet<const char*> d_keywords;
